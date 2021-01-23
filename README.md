@@ -1,4 +1,4 @@
-# kafka-testing-utils
+# kafka-streams-utils
 
-Contains some utilities for easily writing tests that can be run against 
-both TopologyTestDriver and EmbeddedKafka. See tests for example usage. 
+Currently only contains utilities for easily writing tests that can be run against 
+both TopologyTestDriver and EmbeddedKafka reliably. See tests for example usage. 
