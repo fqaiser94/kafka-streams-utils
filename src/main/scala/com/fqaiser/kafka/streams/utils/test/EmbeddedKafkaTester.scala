@@ -16,7 +16,7 @@ import java.time.Duration
 import java.util.{Collections, Properties}
 import _root_.scala.collection.mutable.ArrayBuffer
 import scala.annotation.tailrec
-import scala.util.{Failure, Success, Try}
+import scala.util.{Failure, Success}
 
 trait EmbeddedKafkaTester extends KafkaTester with EmbeddedKafka {
   val patienceConfig: PatienceConfig = PatienceConfig(
@@ -65,32 +65,29 @@ trait EmbeddedKafkaTester extends KafkaTester with EmbeddedKafka {
   ) extends InputTopic[K, V] {
 
     import org.apache.kafka.common.errors.TopicExistsException
+    import java.util.concurrent.ExecutionException
 
-//    // TODO: humm should have max tries. Bit weird that I even need this frankly.
-//    @tailrec
-//    private def retryUntilSuccess(tryBlock: () => Try[Void], attemptsLeft: Int = 10): Void =
-//      tryBlock() match {
-//        case Failure(exception: TopicExistsException) => Unit
-//        case Failure(exception) if attemptsLeft > 0   => retryUntilSuccess(tryBlock, attemptsLeft - 1)
-//        case Failure(exception)                       => throw exception
-//        case Success(value)                           => new Void()
-//      }
+    // TODO: this is a bit flaky so currently we retry until success
+    //  Ideally, just make this not flaky
+    private def createTopic() =
+      withAdminClient(
+        _.createTopics(Collections.singleton(new NewTopic(name, numPartitions, 1.toShort))).all().get()
+      )(embeddedKafkaConfig)
 
-    // TODO: humm should have max tries. Bit weird that I even need this frankly.
     @tailrec
-    private def retryUntilSuccess[T](tryBlock: () => Try[T], attemptsLeft: Int = 10): T =
-      tryBlock() match {
-        case Failure(exception) if attemptsLeft > 0 => retryUntilSuccess(tryBlock, attemptsLeft - 1)
-        case Failure(exception)                     => throw exception
-        case Success(value)                         => value
+    private def retryCreateTopicUntilSuccess(attemptsLeft: Int = 10): Unit = {
+      println(s"attemptsLeft: $attemptsLeft")
+      val res = createTopic()
+      println(s"res: $res")
+      res match {
+        case Success(_)                                                                      => Unit
+        case Failure(e: ExecutionException) if e.getCause.isInstanceOf[TopicExistsException] => Unit
+        case Failure(e) if attemptsLeft > 0                                                  => retryCreateTopicUntilSuccess(attemptsLeft - 1)
+        case Failure(exception)                                                              => throw exception
       }
+    }
 
-    override def create(): Unit =
-      retryUntilSuccess(() =>
-        withAdminClient(
-          _.createTopics(Collections.singletonList(new NewTopic(name, numPartitions, 1.toShort))).all().get()
-        )(embeddedKafkaConfig)
-      )
+    override def create(): Unit = retryCreateTopicUntilSuccess()
 
     override def pipeInput(key: K, value: V, partition: Integer = null): Unit =
       producer.send(new ProducerRecord(name, partition, key, value)).get
