@@ -89,6 +89,8 @@ trait EmbeddedKafkaTester extends KafkaTester with EmbeddedKafka {
 
     override def create(): Unit = retryCreateTopicUntilSuccess()
 
+    // TODO: getting this error occassionally with RepartitionCorrectlyAppTestsWithEmbeddedKafka
+    //  [info]   java.util.concurrent.ExecutionException: org.apache.kafka.common.errors.TimeoutException: Topic InputTopic not present in metadata after 60000 ms.
     override def pipeInput(key: K, value: V, partition: Integer = null): Unit =
       producer.send(new ProducerRecord(name, partition, key, value)).get
 
