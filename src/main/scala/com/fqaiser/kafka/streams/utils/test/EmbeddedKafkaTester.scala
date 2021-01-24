@@ -1,10 +1,11 @@
 package com.fqaiser.kafka.streams.utils.test
 
 import net.manub.embeddedkafka.{EmbeddedKafka, EmbeddedKafkaConfig}
+import org.apache.kafka.clients.admin.NewTopic
 import org.apache.kafka.clients.consumer.{ConsumerConfig, KafkaConsumer}
 import org.apache.kafka.clients.producer.{KafkaProducer, ProducerConfig, ProducerRecord}
 import org.apache.kafka.common.serialization.{Deserializer, Serializer}
-import org.apache.kafka.streams.{KafkaStreams, KeyValue, StreamsConfig, Topology}
+import org.apache.kafka.streams.{KafkaStreams, StreamsConfig, Topology}
 import org.scalactic.source
 import org.scalatest.compatible.Assertion
 import org.scalatest.concurrent.Eventually.{PatienceConfig, eventually}
@@ -14,6 +15,8 @@ import org.scalatest.time.{Seconds, Span}
 import java.time.Duration
 import java.util.{Collections, Properties}
 import _root_.scala.collection.mutable.ArrayBuffer
+import scala.annotation.tailrec
+import scala.util.{Failure, Success, Try}
 
 trait EmbeddedKafkaTester extends KafkaTester with EmbeddedKafka {
   val patienceConfig: PatienceConfig = PatienceConfig(
@@ -56,23 +59,71 @@ trait EmbeddedKafkaTester extends KafkaTester with EmbeddedKafka {
     }(embeddedKafkaConfig)
   }
 
-  final case class EmbeddedKafkaInputTopic[K, V](name: String)(implicit keySer: Serializer[K], valSer: Serializer[V])
-      extends InputTopic[K, V] {
+  final case class EmbeddedKafkaInputTopic[K, V](name: String, numPartitions: Int = 1)(implicit
+      keySer: Serializer[K],
+      valSer: Serializer[V]
+  ) extends InputTopic[K, V] {
+
+    import org.apache.kafka.common.errors.TopicExistsException
+
+//    // TODO: humm should have max tries. Bit weird that I even need this frankly.
+//    @tailrec
+//    private def retryUntilSuccess(tryBlock: () => Try[Void], attemptsLeft: Int = 10): Void =
+//      tryBlock() match {
+//        case Failure(exception: TopicExistsException) => Unit
+//        case Failure(exception) if attemptsLeft > 0   => retryUntilSuccess(tryBlock, attemptsLeft - 1)
+//        case Failure(exception)                       => throw exception
+//        case Success(value)                           => new Void()
+//      }
+
+    // TODO: humm should have max tries. Bit weird that I even need this frankly.
+    @tailrec
+    private def retryUntilSuccess[T](tryBlock: () => Try[T], attemptsLeft: Int = 10): T =
+      tryBlock() match {
+        case Failure(exception) if attemptsLeft > 0 => retryUntilSuccess(tryBlock, attemptsLeft - 1)
+        case Failure(exception)                     => throw exception
+        case Success(value)                         => value
+      }
+
+    override def create(): Unit =
+      retryUntilSuccess(() =>
+        withAdminClient(
+          _.createTopics(Collections.singletonList(new NewTopic(name, numPartitions, 1.toShort))).all().get()
+        )(embeddedKafkaConfig)
+      )
+
+    override def pipeInput(key: K, value: V, partition: Integer = null): Unit =
+      producer.send(new ProducerRecord(name, partition, key, value)).get
 
     private val producerProps = {
       val props = new Properties()
       props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers)
+      props.put(ProducerConfig.ACKS_CONFIG, "all")
       props
     }
-    private val producer = new KafkaProducer(producerProps, keySer, valSer)
 
-    override def pipeInput(key: K, value: V): Unit = producer.send(new ProducerRecord(name, key, value)).get
+    private val producer = new KafkaProducer(producerProps, keySer, valSer)
   }
 
-  final case class EmbeddedKafkaOutputTopic[K, V](name: String)(implicit
+  final case class EmbeddedKafkaOutputTopic[K, V](name: String, numPartitions: Int = 1)(implicit
       keyDes: Deserializer[K],
       valDes: Deserializer[V]
   ) extends OutputTopic[K, V] {
+
+    // TODO: can be reused across InputTopic and OutputTopic
+    override def create(): Unit =
+      withAdminClient(
+        _.createTopics(Collections.singletonList(new NewTopic(name, numPartitions, 1.toShort))).all().get()
+      )
+
+    override def readKeyValuesToList(): List[Record[K, V]] = {
+      val consumer = newConsumer()
+      consumer.subscribe(Collections.singletonList(name))
+      val records = consumer.poll(Duration.ofSeconds(10))
+      val res = ArrayBuffer[Record[K, V]]()
+      records.forEach(cr => res.append(Record(cr.key(), cr.value(), cr.partition())))
+      res.toList
+    }
 
     private def newConsumer() = {
       val consumerProps = {
@@ -84,23 +135,14 @@ trait EmbeddedKafkaTester extends KafkaTester with EmbeddedKafka {
       }
       new KafkaConsumer(consumerProps, keyDes, valDes)
     }
-
-    override def readKeyValuesToList(): List[KeyValue[K, V]] = {
-      val consumer = newConsumer()
-      consumer.subscribe(Collections.singletonList(name))
-      val records = consumer.poll(Duration.ofSeconds(10))
-      val res = ArrayBuffer[KeyValue[K, V]]()
-      records.forEach(cr => res.append(new KeyValue(cr.key(), cr.value())))
-      res.toList
-    }
   }
 
-  override final def topicShouldContainTheSameElementsAs[K, V](
+  override final def topicShouldContainTheSameElementsInOrderAs[K, V](
       outputTopic: OutputTopic[K, V],
-      expected: Seq[KeyValue[K, V]]
+      expected: Seq[Record[K, V]]
   ): Assertion = {
     eventually {
-      super.topicShouldContainTheSameElementsAs(outputTopic, expected)
+      super.topicShouldContainTheSameElementsInOrderAs(outputTopic, expected)
     }(patienceConfig, implicitly[Retrying[Assertion]], implicitly[source.Position])
   }
 

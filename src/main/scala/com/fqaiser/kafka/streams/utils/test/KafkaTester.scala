@@ -1,6 +1,6 @@
 package com.fqaiser.kafka.streams.utils.test
 
-import org.apache.kafka.streams.{KeyValue, Topology}
+import org.apache.kafka.streams.Topology
 import org.scalatest.compatible.Assertion
 import org.scalatest.matchers.should.Matchers
 
@@ -8,14 +8,18 @@ trait KafkaTester extends Matchers {
 
   trait Topic {
     val name: String
+    val numPartitions: Int
+    def create(): Unit
   }
 
   trait InputTopic[K, V] extends Topic {
-    def pipeInput(key: K, value: V): Unit
+    def pipeInput(key: K, value: V, partition: Integer = null): Unit
   }
 
+  case class Record[K, V](key: K, value: V, partition: Integer = null)
+
   trait OutputTopic[K, V] extends Topic {
-    def readKeyValuesToList(): List[KeyValue[K, V]]
+    def readKeyValuesToList(): List[Record[K, V]]
   }
 
   trait Stream {
@@ -26,25 +30,28 @@ trait KafkaTester extends Matchers {
   val topology: Topology
   def buildStream(topology: Topology): Stream
 
-  type TestFunctionEnvironment
+  case class InputOutputTopics(input: Seq[Topic], output: Seq[Topic])
 
-  final type TestFunction = TestFunctionEnvironment => Assertion
+  final type TestFunction = InputOutputTopics => Assertion
 
-  def testFunctionParams: TestFunctionEnvironment
+  def inputOutputTopics(): InputOutputTopics
 
   def runKafkaTest(testFunction: TestFunction): Unit = {
     val stream = buildStream(topology)
     try {
+      val params = inputOutputTopics()
+      params.input.foreach(_.create())
+      params.output.foreach(_.create())
       stream.start()
-      testFunction(testFunctionParams)
+      testFunction(params)
     } finally {
       stream.close()
     }
   }
 
-  def topicShouldContainTheSameElementsAs[K, V](
+  def topicShouldContainTheSameElementsInOrderAs[K, V](
       outputTopic: OutputTopic[K, V],
-      expected: Seq[KeyValue[K, V]]
+      expected: Seq[Record[K, V]]
   ): Assertion = {
     val result = outputTopic.readKeyValuesToList()
     result should contain theSameElementsInOrderAs expected

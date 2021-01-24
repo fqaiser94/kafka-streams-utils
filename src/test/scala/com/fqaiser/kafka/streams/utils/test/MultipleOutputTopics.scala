@@ -1,9 +1,9 @@
 package com.fqaiser.kafka.streams.utils.test
 
 import io.github.azhur.kafkaserdeavro4s.Avro4sBinarySupport
+import org.apache.kafka.streams.Topology
 import org.apache.kafka.streams.scala.ImplicitConversions._
 import org.apache.kafka.streams.scala.StreamsBuilder
-import org.apache.kafka.streams.{KeyValue, Topology}
 import org.scalatest.featurespec.AnyFeatureSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -31,11 +31,23 @@ object MultipleOutputTopics {
     Feature("Basic App") {
       Scenario("Adds 1 to both key and value") {
         runKafkaTest {
-          case (inputTopic, oddNumbersOutputTopic, evenNumbersOutputTopic) =>
+          case InputOutputTopics(
+                Seq(inputTopic: TestInputTopic),
+                Seq(
+                  oddNumbersOutputTopic: TestOddNumbersOutputTopic,
+                  evenNumbersOutputTopic: TestEvenNumbersOutputTopic
+                )
+              ) =>
             inputTopic.pipeInput(InputKey(), InputValue(1))
             inputTopic.pipeInput(InputKey(), InputValue(2))
-            topicShouldContainTheSameElementsAs(oddNumbersOutputTopic, Seq(new KeyValue(OutputKey(), OutputValue(1))))
-            topicShouldContainTheSameElementsAs(evenNumbersOutputTopic, Seq(new KeyValue(OutputKey(), OutputValue(2))))
+            topicShouldContainTheSameElementsInOrderAs(
+              oddNumbersOutputTopic,
+              Seq(Record(OutputKey(), OutputValue(1), 0))
+            )
+            topicShouldContainTheSameElementsInOrderAs(
+              evenNumbersOutputTopic,
+              Seq(Record(OutputKey(), OutputValue(2), 0))
+            )
         }
       }
     }
@@ -51,16 +63,16 @@ object MultipleOutputTopics {
     type TestInputTopic = InputTopic[InputKey, InputValue]
     type TestOddNumbersOutputTopic = OutputTopic[OutputKey, OutputValue]
     type TestEvenNumbersOutputTopic = OutputTopic[OutputKey, OutputValue]
-    override type TestFunctionEnvironment = (TestInputTopic, TestOddNumbersOutputTopic, TestEvenNumbersOutputTopic)
 
-    def makeTestInputTopic(name: String): TestInputTopic
+    def makeInputTopic(name: String): TestInputTopic
     def makeOddNumbersOutputTopic(name: String): TestOddNumbersOutputTopic
     def makeEvenNumbersOutputTopic(name: String): TestEvenNumbersOutputTopic
-    override def testFunctionParams =
-      (
-        makeTestInputTopic(inputTopicName),
-        makeOddNumbersOutputTopic(oddNumbersOutputTopicName),
-        makeEvenNumbersOutputTopic(evenNumbersOutputTopicName)
+    override def inputOutputTopics() =
+      InputOutputTopics(
+        makeInputTopic(inputTopicName) :: Nil,
+        makeOddNumbersOutputTopic(oddNumbersOutputTopicName) :: makeEvenNumbersOutputTopic(
+          evenNumbersOutputTopicName
+        ) :: Nil
       )
 
     override lazy val topology: Topology =
@@ -72,7 +84,7 @@ class MultipleOutputTopicsAppTestsWithTopologyTestDriver
     extends MultipleOutputTopics.Tests
     with MultipleOutputTopics.AppTester
     with TopologyTestDriverKafkaTester {
-  override def makeTestInputTopic(name: String) = MockInputTopic(name)
+  override def makeInputTopic(name: String) = MockInputTopic(name)
   override def makeOddNumbersOutputTopic(name: String) = MockOutputTopic(name)
   override def makeEvenNumbersOutputTopic(name: String) = MockOutputTopic(name)
 }
@@ -81,7 +93,7 @@ class MultipleOutputTopicsAppTestsWithEmbeddedKafka
     extends MultipleOutputTopics.Tests
     with MultipleOutputTopics.AppTester
     with EmbeddedKafkaTester {
-  override def makeTestInputTopic(name: String) = EmbeddedKafkaInputTopic(name)
+  override def makeInputTopic(name: String) = EmbeddedKafkaInputTopic(name)
   override def makeOddNumbersOutputTopic(name: String) = EmbeddedKafkaOutputTopic(name)
   override def makeEvenNumbersOutputTopic(name: String) = EmbeddedKafkaOutputTopic(name)
 }

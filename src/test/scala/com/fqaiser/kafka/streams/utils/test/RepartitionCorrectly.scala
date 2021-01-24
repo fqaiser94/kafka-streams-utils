@@ -7,7 +7,7 @@ import org.apache.kafka.streams.scala.StreamsBuilder
 import org.scalatest.featurespec.AnyFeatureSpec
 import org.scalatest.matchers.should.Matchers
 
-object SingleOutputTopic {
+object RepartitionCorrectly {
 
   object App extends Avro4sBinarySupport {
     def genTopology(inputTopicName: String, outputTopicName: String): Topology = {
@@ -15,7 +15,7 @@ object SingleOutputTopic {
 
       builder
         .stream[InputKey, InputValue](inputTopicName)
-        .map((k, v) => (OutputKey(), OutputValue(v.num + 1)))
+        .repartition
         .to(outputTopicName)
 
       builder.build()
@@ -29,8 +29,16 @@ object SingleOutputTopic {
       Scenario("Adds 1 to both key and value") {
         runKafkaTest {
           case InputOutputTopics(Seq(inputTopic: TestInputTopic), Seq(outputTopic: TestOutputTopic)) =>
-            inputTopic.pipeInput(InputKey(), InputValue(1))
-            topicShouldContainTheSameElementsInOrderAs(outputTopic, Seq(Record(OutputKey(), OutputValue(2), 0)))
+            // same key being sent to 2 different partitions
+            // TODO: take Record as input
+            inputTopic.pipeInput(InputKey(), InputValue(1), 0)
+            inputTopic.pipeInput(InputKey(), InputValue(1), 1)
+            // should end up on same partition
+            topicShouldContainTheSameElementsInOrderAs(
+              outputTopic,
+              Seq(Record(OutputKey(), OutputValue(1), 0), Record(OutputKey(), OutputValue(1), 0))
+            )
+
         }
       }
     }
@@ -47,25 +55,25 @@ object SingleOutputTopic {
 
     def makeTestInputTopic(name: String): TestInputTopic
     def makeTestOutputTopic(name: String): TestOutputTopic
-    override def inputOutputTopics =
-      InputOutputTopics(Seq(makeTestInputTopic(inputTopicName)), Seq(makeTestOutputTopic(outputTopicName)))
+    override def inputOutputTopics() =
+      InputOutputTopics(makeTestInputTopic(inputTopicName) :: Nil, makeTestOutputTopic(outputTopicName) :: Nil)
 
     override lazy val topology: Topology = App.genTopology(inputTopicName, outputTopicName)
   }
 }
 
-class SingleOutputTopicAppTestsWithTopologyTestDriver
-    extends SingleOutputTopic.Tests
-    with SingleOutputTopic.AppTester
+class RepartitionCorrectlyAppTestsWithTopologyTestDriver
+    extends RepartitionCorrectly.Tests
+    with RepartitionCorrectly.AppTester
     with TopologyTestDriverKafkaTester {
-  override def makeTestInputTopic(name: String) = MockInputTopic(name)
-  override def makeTestOutputTopic(name: String) = MockOutputTopic(name)
+  override def makeTestInputTopic(name: String) = MockInputTopic(name, 2)
+  override def makeTestOutputTopic(name: String) = MockOutputTopic(name, 2)
 }
 
-class SingleOutputTopicAppTestsWithEmbeddedKafka
-    extends SingleOutputTopic.Tests
-    with SingleOutputTopic.AppTester
+class RepartitionCorrectlyAppTestsWithEmbeddedKafka
+    extends RepartitionCorrectly.Tests
+    with RepartitionCorrectly.AppTester
     with EmbeddedKafkaTester {
-  override def makeTestInputTopic(name: String) = EmbeddedKafkaInputTopic(name)
-  override def makeTestOutputTopic(name: String) = EmbeddedKafkaOutputTopic(name)
+  override def makeTestInputTopic(name: String) = EmbeddedKafkaInputTopic(name, 2)
+  override def makeTestOutputTopic(name: String) = EmbeddedKafkaOutputTopic(name, 2)
 }
