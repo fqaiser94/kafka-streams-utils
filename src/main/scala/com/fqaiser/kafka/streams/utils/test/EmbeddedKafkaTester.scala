@@ -4,6 +4,7 @@ import net.manub.embeddedkafka.{EmbeddedKafka, EmbeddedKafkaConfig}
 import org.apache.kafka.clients.admin.NewTopic
 import org.apache.kafka.clients.consumer.{ConsumerConfig, KafkaConsumer}
 import org.apache.kafka.clients.producer.{KafkaProducer, ProducerConfig, ProducerRecord}
+import org.apache.kafka.common.errors.TopicExistsException
 import org.apache.kafka.common.serialization.{Deserializer, Serializer}
 import org.apache.kafka.streams.{KafkaStreams, StreamsConfig, Topology}
 import org.scalactic.source
@@ -13,6 +14,7 @@ import org.scalatest.enablers.Retrying
 import org.scalatest.time.{Seconds, Span}
 
 import java.time.Duration
+import java.util.concurrent.ExecutionException
 import java.util.{Collections, Properties}
 import _root_.scala.collection.mutable.ArrayBuffer
 import scala.annotation.tailrec
@@ -59,38 +61,29 @@ trait EmbeddedKafkaTester extends KafkaTester with EmbeddedKafka {
     }(embeddedKafkaConfig)
   }
 
-  final case class EmbeddedKafkaInputTopic[K, V](name: String, numPartitions: Int = 1)(implicit
-      keySer: Serializer[K],
-      valSer: Serializer[V]
-  ) extends InputTopic[K, V] {
-
-    import org.apache.kafka.common.errors.TopicExistsException
-    import java.util.concurrent.ExecutionException
-
-    // TODO: this is a bit flaky so currently we retry until success
-    //  Ideally, just make this not flaky
-    private def createTopic() =
-      withAdminClient(
-        _.createTopics(Collections.singleton(new NewTopic(name, numPartitions, 1.toShort))).all().get()
-      )(embeddedKafkaConfig)
-
+  trait TopicWithCreate extends Topic {
     @tailrec
-    private def retryCreateTopicUntilSuccess(attemptsLeft: Int = 10): Unit = {
+    private def createTopic(attemptsLeft: Int = 10): Unit = {
       println(s"attemptsLeft: $attemptsLeft")
-      val res = createTopic()
+      val res = createCustomTopic(name, Map.empty, numPartitions)
       println(s"res: $res")
       res match {
-        case Success(_)                                                                      => Unit
+        case Success(value)                                                                  => value
         case Failure(e: ExecutionException) if e.getCause.isInstanceOf[TopicExistsException] => Unit
-        case Failure(e) if attemptsLeft > 0                                                  => retryCreateTopicUntilSuccess(attemptsLeft - 1)
+        case Failure(e) if attemptsLeft > 0                                                  => createTopic(attemptsLeft - 1)
         case Failure(exception)                                                              => throw exception
       }
     }
 
-    override def create(): Unit = retryCreateTopicUntilSuccess()
+    override def create(): Unit = createTopic()
+  }
 
-    // TODO: getting this error occassionally with RepartitionCorrectlyAppTestsWithEmbeddedKafka
-    //  [info]   java.util.concurrent.ExecutionException: org.apache.kafka.common.errors.TimeoutException: Topic InputTopic not present in metadata after 60000 ms.
+  final case class EmbeddedKafkaInputTopic[K, V](name: String, numPartitions: Int = 1)(implicit
+      keySer: Serializer[K],
+      valSer: Serializer[V]
+  ) extends InputTopic[K, V]
+      with TopicWithCreate {
+
     override def pipeInput(key: K, value: V, partition: Integer = null): Unit =
       producer.send(new ProducerRecord(name, partition, key, value)).get
 
@@ -107,13 +100,8 @@ trait EmbeddedKafkaTester extends KafkaTester with EmbeddedKafka {
   final case class EmbeddedKafkaOutputTopic[K, V](name: String, numPartitions: Int = 1)(implicit
       keyDes: Deserializer[K],
       valDes: Deserializer[V]
-  ) extends OutputTopic[K, V] {
-
-    // TODO: can be reused across InputTopic and OutputTopic
-    override def create(): Unit =
-      withAdminClient(
-        _.createTopics(Collections.singletonList(new NewTopic(name, numPartitions, 1.toShort))).all().get()
-      )
+  ) extends OutputTopic[K, V]
+      with TopicWithCreate {
 
     override def readKeyValuesToList(): List[Record[K, V]] = {
       val consumer = newConsumer()
